@@ -187,17 +187,19 @@ await test("long one-line snippets are non-empty and marked truncated", async ()
 	assert.match(text, /1\. Result/);
 });
 
-await test("tavily_extract details include image URLs only when requested", async () => {
+await test("tavily_extract details and request body include image URLs only when requested", async () => {
 	process.env.TAVILY_API_KEY = "test-key";
-	installFetch(() => ({
+	const calls = installFetch(() => ({
 		results: [{ url: "https://example.com/a", raw_content: "€", images: ["https://img.example/a.png", " ", 42, " https://img.example/b.png "] }],
 	}));
 	const withImages = await execute(extract, { urls: ["https://example.com/a"], include_images: true });
+	assert.equal(calls[0].body.include_images, true);
 	assert.equal(withImages.details.results[0].contentBytes, 3);
 	assert.equal(withImages.details.results[0].imageCount, 2);
 	assert.deepEqual(withImages.details.results[0].images, ["https://img.example/a.png", "https://img.example/b.png"]);
 
 	const withoutImages = await execute(extract, { urls: ["https://example.com/a"], include_images: false });
+	assert.equal(calls[1].body.include_images, false);
 	assert.equal(withoutImages.details.results[0].imageCount, 2);
 	assert.equal(Object.hasOwn(withoutImages.details.results[0], "images"), false);
 });
@@ -262,6 +264,50 @@ await test("repo-root .env fallback refuses tracked or not-gitignored .env", asy
 		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is missing/i);
 		assert.equal(calls.length, 0);
 	});
+});
+
+await test("search_extract searches, selects safe result URLs, then extracts combined content", async () => {
+	process.env.TAVILY_API_KEY = "test-key";
+	const calls = installFetch((_call, index) => {
+		if (index === 1) {
+			return {
+				query: "q",
+				request_id: "search-request",
+				results: [
+					{ title: "Local", url: "http://localhost./x", content: "skip" },
+					{ title: "Guide", url: "https://docs.tavily.com/guides/search", content: "search guide", score: 0.9 },
+					{ title: "Duplicate", url: "https://docs.tavily.com/guides/search", content: "duplicate" },
+					{ title: "API", url: "https://api.tavily.com/docs", content: "api docs", score: 0.8 },
+					{ title: "Extra", url: "https://www.tavily.com/blog", content: "extra" },
+				],
+			};
+		}
+		return {
+			request_id: "extract-request",
+			results: [
+				{ url: "https://docs.tavily.com/guides/search", raw_content: "Guide body" },
+				{ url: "https://api.tavily.com/docs", raw_content: "API body" },
+			],
+		};
+	});
+
+	const result = await execute(searchExtract, { query: "q", extract_top_results: 2 });
+
+	assert.equal(calls.length, 2);
+	assert.match(calls[0].url, /\/search$/);
+	assert.equal(calls[0].body.query, "q");
+	assert.equal(calls[0].body.max_results, 5);
+	assert.match(calls[1].url, /\/extract$/);
+	assert.deepEqual(calls[1].body.urls, ["https://docs.tavily.com/guides/search", "https://api.tavily.com/docs"]);
+	assert.equal(calls[1].body.include_images, false);
+	assert.deepEqual(result.details.extractedUrls, ["https://docs.tavily.com/guides/search", "https://api.tavily.com/docs"]);
+	assert.equal(result.details.searchRequestId, "search-request");
+	assert.equal(result.details.extractRequestId, "extract-request");
+	assert.match(result.content[0].text, /Search summary:/);
+	assert.match(result.content[0].text, /2\. Guide/);
+	assert.match(result.content[0].text, /Tavily extracted content \(2\):/);
+	assert.match(result.content[0].text, /Guide body/);
+	assert.match(result.content[0].text, /API body/);
 });
 
 await test("search_extract skips unsafe result URLs instead of throwing", async () => {

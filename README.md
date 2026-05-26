@@ -40,6 +40,8 @@ Run the offline harness; it mocks `fetch` and does not call Tavily:
 npm test
 ```
 
+The harness loads Pi from the global npm install. If Pi is not globally discoverable on your machine, set `PI_CODING_AGENT_ROOT` to the local `@earendil-works/pi-coding-agent` package directory before running tests.
+
 Additional checks:
 
 ```bash
