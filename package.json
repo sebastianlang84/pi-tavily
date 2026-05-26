@@ -1,0 +1,27 @@
+{
+  "name": "pi-tavily",
+  "version": "0.1.0",
+  "description": "Tavily search and extraction tools for Pi Coding Agent.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "tavily",
+    "search"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "check": "node --check src/index.ts && node --check test/run.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
