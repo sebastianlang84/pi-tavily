@@ -516,8 +516,8 @@ export default function (pi: ExtensionAPI) {
 		parameters: TavilyExtractParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const apiKey = await getApiKeyOrThrow(ctx.cwd);
 			const urls = normalizePublicUrls(params.urls);
+			const apiKey = await getApiKeyOrThrow(ctx.cwd);
 			const data = await tavilyRequest<TavilyExtractResponse>(
 				TAVILY_EXTRACT_ENDPOINT,
 				apiKey,

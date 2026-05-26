@@ -211,8 +211,8 @@ await test("HTTP error messages redact the Tavily API key", async () => {
 	assert.doesNotMatch(message, /test-key/);
 });
 
-await test("tavily_extract rejects sensitive or over-limit URLs before fetch", async () => {
-	process.env.TAVILY_API_KEY = "test-key";
+await test("tavily_extract rejects sensitive or over-limit URLs before API-key lookup or fetch", async () => {
+	delete process.env.TAVILY_API_KEY;
 	const calls = installFetch(() => {
 		throw new Error("fetch must not be called");
 	});
