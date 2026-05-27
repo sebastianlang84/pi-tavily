@@ -4,7 +4,6 @@ Pi Coding Agent extension package that registers Tavily-backed web tools:
 
 - `tavily_search` — search the public web and return compact cited results.
 - `tavily_extract` — extract readable content from public HTTP(S) URLs.
-- `tavily_search_extract` — search first, then extract the top public result URLs.
 
 ## Install
 

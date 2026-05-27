@@ -67,25 +67,6 @@ const TavilyExtractParams = Type.Object({
 	include_images: Type.Optional(Type.Boolean({ description: "Include image URLs in details. Default false.", default: false })),
 });
 
-const TavilySearchExtractParams = Type.Object({
-	query: Type.String({ description: "Web search query. The tool searches first, then extracts the top result URLs. Do not include secrets or sensitive private data.", minLength: 1 }),
-	search_max_results: Type.Optional(
-		Type.Integer({ description: "Number of search results to inspect before extraction. Default 5, max 10.", minimum: 1, maximum: MAX_RESULTS_LIMIT, default: 5 }),
-	),
-	extract_top_results: Type.Optional(
-		Type.Integer({ description: "How many top search result URLs to extract. Default 3, max 5.", minimum: 1, maximum: MAX_EXTRACT_URLS, default: 3 }),
-	),
-	search_depth: Type.Optional(SearchDepth),
-	topic: Type.Optional(
-		StringEnum(["general", "news"] as const, {
-			description: "Search topic. Use 'news' for recent news/current events. Default 'general'.",
-			default: "general",
-		}),
-	),
-	extract_depth: Type.Optional(ExtractDepth),
-	format: Type.Optional(ExtractFormat),
-});
-
 type TavilyResult = {
 	title?: unknown;
 	url?: unknown;
@@ -236,20 +217,6 @@ function normalizePublicUrls(urls: string[]): string[] {
 
 	if (normalized.length === 0) throw new Error("tavily_extract requires at least one URL.");
 	if (normalized.length > MAX_EXTRACT_URLS) throw new Error(`tavily_extract accepts at most ${MAX_EXTRACT_URLS} URLs.`);
-	return normalized;
-}
-
-function filterPublicUrls(urls: string[], maxUrls: number): string[] {
-	const normalized: string[] = [];
-	for (const raw of urls) {
-		try {
-			const url = normalizePublicUrl(raw);
-			if (!normalized.includes(url)) normalized.push(url);
-		} catch {
-			// Search results can occasionally contain unsupported URLs; skip them for search+extract.
-		}
-		if (normalized.length >= maxUrls) break;
-	}
 	return normalized;
 }
 
@@ -546,89 +513,4 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
-		name: "tavily_search_extract",
-		label: "Tavily Search + Extract",
-		description:
-			"Search Tavily, then extract compact content from the top public result URLs. Use when the user has no URL but needs more than snippets. Defaults: search 5, extract top 3; max extract 5.",
-		promptSnippet: "Search the web with Tavily, then extract the top result pages.",
-		promptGuidelines: [
-			"Use tavily_search_extract when the user has no URL but asks for deeper internet research or source content beyond search snippets.",
-			"Avoid tavily_search_extract for quick fact lookup; use tavily_search first because extraction spends more credits and context.",
-			"Do not send secrets, private source code, unpublished business data, or sensitive user data in tavily_search_extract queries.",
-		],
-		parameters: TavilySearchExtractParams,
-
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const query = params.query.trim();
-			if (!query) throw new Error("tavily_search_extract query must not be blank.");
-			const apiKey = await getApiKeyOrThrow(ctx.cwd);
-
-			const searchMaxResults = clampInteger(params.search_max_results, 5, MAX_RESULTS_LIMIT);
-			const extractTopResults = clampInteger(params.extract_top_results, 3, MAX_EXTRACT_URLS);
-			const searchData = await tavilyRequest<TavilySearchResponse>(
-				TAVILY_SEARCH_ENDPOINT,
-				apiKey,
-				{
-					query,
-					max_results: searchMaxResults,
-					search_depth: params.search_depth ?? "basic",
-					topic: params.topic ?? "general",
-					include_answer: false,
-					include_raw_content: false,
-					include_images: false,
-				},
-				signal,
-			);
-
-			const searchResults = objectEntries<TavilyResult>(searchData.results);
-			const candidateUrls = searchResults.map((result) => asString(result.url)).filter((url): url is string => Boolean(url));
-			const urls = filterPublicUrls(candidateUrls, extractTopResults);
-			if (urls.length === 0) {
-				return {
-					content: [{ type: "text", text: `Search summary:\n${formatSearchResults(searchData, searchMaxResults)}\n\nNo extractable public URLs found in the top Tavily results.` }],
-					details: {
-						provider: "tavily",
-						operation: "search_extract",
-						query: searchData.query ?? query,
-						searchResultCount: searchResultSummaries(searchData, searchMaxResults).length,
-						extractedUrls: [],
-						searchRequestId: searchData.request_id,
-						searchUsage: searchData.usage,
-						searchResults: searchResultSummaries(searchData, searchMaxResults),
-					},
-				};
-			}
-			const extractData = await tavilyRequest<TavilyExtractResponse>(
-				TAVILY_EXTRACT_ENDPOINT,
-				apiKey,
-				{
-					urls,
-					extract_depth: params.extract_depth ?? "basic",
-					format: params.format ?? "markdown",
-					include_images: false,
-				},
-				signal,
-			);
-
-			const text = [`Search summary:\n${formatSearchResults(searchData, searchMaxResults)}`, "", formatExtractResults(extractData)].join("\n");
-			return {
-				content: [{ type: "text", text }],
-				details: {
-					provider: "tavily",
-					operation: "search_extract",
-					query: searchData.query ?? query,
-					searchResultCount: searchResultSummaries(searchData, searchMaxResults).length,
-					extractedUrls: urls,
-					searchRequestId: searchData.request_id,
-					extractRequestId: extractData.request_id,
-					searchUsage: searchData.usage,
-					extractUsage: extractData.usage,
-					searchResults: searchResultSummaries(searchData, searchMaxResults),
-					extractResults: extractResultSummaries(extractData),
-					failedResults: failedResultSummaries(extractData),
-				},
-			};
-		},
-	});
 }

@@ -125,10 +125,9 @@ async function test(name, fn) {
 const tools = await loadTools();
 const search = tools.get("tavily_search");
 const extract = tools.get("tavily_extract");
-const searchExtract = tools.get("tavily_search_extract");
 assert(search, "tavily_search should register");
 assert(extract, "tavily_extract should register");
-assert(searchExtract, "tavily_search_extract should register");
+assert.deepEqual([...tools.keys()].sort(), ["tavily_extract", "tavily_search"], "only the orthogonal Tavily tools should register");
 
 await test("rejects trailing-dot localhost/private hosts before fetch", async () => {
 	process.env.TAVILY_API_KEY = "test-key";
@@ -147,7 +146,6 @@ await test("blank queries reject before API-key lookup or fetch", async () => {
 		throw new Error("fetch must not be called");
 	});
 	await rejectsWith(execute(search, { query: "   " }), /query must not be blank/i);
-	await rejectsWith(execute(searchExtract, { query: "\t" }), /query must not be blank/i);
 	assert.equal(calls.length, 0);
 });
 
@@ -264,64 +262,6 @@ await test("repo-root .env fallback refuses tracked or not-gitignored .env", asy
 		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is missing/i);
 		assert.equal(calls.length, 0);
 	});
-});
-
-await test("search_extract searches, selects safe result URLs, then extracts combined content", async () => {
-	process.env.TAVILY_API_KEY = "test-key";
-	const calls = installFetch((_call, index) => {
-		if (index === 1) {
-			return {
-				query: "q",
-				request_id: "search-request",
-				results: [
-					{ title: "Local", url: "http://localhost./x", content: "skip" },
-					{ title: "Guide", url: "https://docs.tavily.com/guides/search", content: "search guide", score: 0.9 },
-					{ title: "Duplicate", url: "https://docs.tavily.com/guides/search", content: "duplicate" },
-					{ title: "API", url: "https://api.tavily.com/docs", content: "api docs", score: 0.8 },
-					{ title: "Extra", url: "https://www.tavily.com/blog", content: "extra" },
-				],
-			};
-		}
-		return {
-			request_id: "extract-request",
-			results: [
-				{ url: "https://docs.tavily.com/guides/search", raw_content: "Guide body" },
-				{ url: "https://api.tavily.com/docs", raw_content: "API body" },
-			],
-		};
-	});
-
-	const result = await execute(searchExtract, { query: "q", extract_top_results: 2 });
-
-	assert.equal(calls.length, 2);
-	assert.match(calls[0].url, /\/search$/);
-	assert.equal(calls[0].body.query, "q");
-	assert.equal(calls[0].body.max_results, 5);
-	assert.match(calls[1].url, /\/extract$/);
-	assert.deepEqual(calls[1].body.urls, ["https://docs.tavily.com/guides/search", "https://api.tavily.com/docs"]);
-	assert.equal(calls[1].body.include_images, false);
-	assert.deepEqual(result.details.extractedUrls, ["https://docs.tavily.com/guides/search", "https://api.tavily.com/docs"]);
-	assert.equal(result.details.searchRequestId, "search-request");
-	assert.equal(result.details.extractRequestId, "extract-request");
-	assert.match(result.content[0].text, /Search summary:/);
-	assert.match(result.content[0].text, /2\. Guide/);
-	assert.match(result.content[0].text, /Tavily extracted content \(2\):/);
-	assert.match(result.content[0].text, /Guide body/);
-	assert.match(result.content[0].text, /API body/);
-});
-
-await test("search_extract skips unsafe result URLs instead of throwing", async () => {
-	process.env.TAVILY_API_KEY = "test-key";
-	installFetch(() => ({
-		query: "q",
-		results: [
-			{ title: "Local", url: "http://localhost./x", content: "skip" },
-			{ title: "Token", url: "https://example.com/?token=secret", content: "skip" },
-		],
-	}));
-	const result = await execute(searchExtract, { query: "q" });
-	assert.deepEqual(result.details.extractedUrls, []);
-	assert.match(result.content[0].text, /No extractable public URLs/);
 });
 
 console.log("all tavily-search extension tests passed");

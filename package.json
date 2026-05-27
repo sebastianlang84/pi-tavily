@@ -1,7 +1,7 @@
 {
   "name": "pi-tavily",
-  "version": "0.1.0",
-  "description": "Tavily search and extraction tools for Pi Coding Agent.",
+  "version": "0.2.0",
+  "description": "Tavily search and URL extraction tools for Pi Coding Agent.",
   "type": "module",
   "license": "MIT",
   "keywords": [
