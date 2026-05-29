@@ -27,9 +27,18 @@ Reload Pi after install:
 
 ## Configuration
 
-Set `TAVILY_API_KEY` in the environment. The extension also supports a local development fallback from a Git repo root `.env` only when that `.env` is both untracked and gitignored.
+Set `TAVILY_API_KEY` in the environment, or point pi-tavily at an env file without depending on Pi's current working directory:
 
-Do not commit Tavily API keys or `.env` files.
+```json
+// ~/.pi/agent/state/pi-tavily/config.json
+{
+  "envFile": "/path/to/.env"
+}
+```
+
+You can also set `PI_TAVILY_ENV_FILE=/path/to/.env`. The extension keeps the older local-development fallback from a Git repo root `.env` for the current cwd.
+
+When an env file lives inside a Git repo, pi-tavily reads it only when that file is both untracked and gitignored. Do not commit Tavily API keys or `.env` files.
 
 ## Development
 

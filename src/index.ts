@@ -2,7 +2,8 @@ import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
@@ -15,6 +16,8 @@ const MAX_EXTRACT_URLS = 5;
 const SNIPPET_MAX_BYTES = 1200;
 const EXTRACT_MAX_BYTES_PER_URL = 8000;
 const REQUEST_TIMEOUT_MS = 20_000;
+const TAVILY_ENV_FILE_VAR = "PI_TAVILY_ENV_FILE";
+const TAVILY_CONFIG_FILE_VAR = "PI_TAVILY_CONFIG_FILE";
 
 const SearchDepth = StringEnum(["basic", "advanced"] as const, {
 	description: "Tavily search depth. Use 'advanced' only when higher recall is worth extra latency/credits. Default 'basic'.",
@@ -103,9 +106,51 @@ async function readApiKey(cwd: string): Promise<string | undefined> {
 	const envKey = process.env.TAVILY_API_KEY?.trim();
 	if (envKey) return envKey;
 
-	const envPath = safeRepoRootEnvPath(cwd);
-	if (!envPath) return undefined;
+	for (const envPath of await candidateEnvFiles(cwd)) {
+		if (!isSafeEnvFile(envPath)) continue;
+		const fileKey = await readApiKeyFromEnvFile(envPath);
+		if (fileKey) return fileKey;
+	}
 
+	return undefined;
+}
+
+async function candidateEnvFiles(cwd: string): Promise<string[]> {
+	const candidates: string[] = [];
+	const explicitEnvFile = process.env[TAVILY_ENV_FILE_VAR]?.trim();
+	if (explicitEnvFile) candidates.push(resolve(expandHome(explicitEnvFile)));
+
+	const configuredEnvFile = await readConfiguredEnvFile();
+	if (configuredEnvFile) candidates.push(resolve(expandHome(configuredEnvFile)));
+
+	const envPath = safeRepoRootEnvPath(cwd);
+	if (envPath) candidates.push(envPath);
+
+	return [...new Set(candidates)];
+}
+
+async function readConfiguredEnvFile(): Promise<string | undefined> {
+	const configPath = resolve(expandHome(process.env[TAVILY_CONFIG_FILE_VAR]?.trim() || defaultConfigPath()));
+	try {
+		const configText = await readFile(configPath, "utf8");
+		const config = JSON.parse(configText) as { envFile?: unknown };
+		return typeof config.envFile === "string" && config.envFile.trim() ? config.envFile.trim() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function defaultConfigPath(): string {
+	return join(homedir(), ".pi", "agent", "state", "pi-tavily", "config.json");
+}
+
+function expandHome(path: string): string {
+	if (path === "~") return homedir();
+	if (path.startsWith("~/")) return join(homedir(), path.slice(2));
+	return path;
+}
+
+async function readApiKeyFromEnvFile(envPath: string): Promise<string | undefined> {
 	try {
 		const envText = await readFile(envPath, "utf8");
 		for (const line of envText.split(/\r?\n/)) {
@@ -115,7 +160,7 @@ async function readApiKey(cwd: string): Promise<string | undefined> {
 			if (value) return value;
 		}
 	} catch {
-		// Repo-root .env is optional; missing/unreadable files just mean no fallback key.
+		// Missing/unreadable fallback files just mean no key from that source.
 	}
 
 	return undefined;
@@ -132,19 +177,28 @@ function safeRepoRootEnvPath(cwd: string): string | undefined {
 	const repoRoot = gitRepoRoot(cwd);
 	if (!repoRoot) return undefined;
 
-	const tracked = spawnSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", ".env"], {
+	const envPath = join(repoRoot, ".env");
+	return isSafeEnvFile(envPath) ? envPath : undefined;
+}
+
+function isSafeEnvFile(envPath: string): boolean {
+	const repoRoot = gitRepoRoot(dirname(envPath));
+	if (!repoRoot) return true;
+
+	const relativePath = relative(repoRoot, envPath);
+	if (!relativePath || relativePath.startsWith("..")) return false;
+
+	const tracked = spawnSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", relativePath], {
 		stdio: "ignore",
 		timeout: 1000,
 	});
-	if (tracked.status === 0) return undefined;
+	if (tracked.status === 0) return false;
 
-	const ignored = spawnSync("git", ["-C", repoRoot, "check-ignore", "-q", ".env"], {
+	const ignored = spawnSync("git", ["-C", repoRoot, "check-ignore", "-q", relativePath], {
 		stdio: "ignore",
 		timeout: 1000,
 	});
-	if (ignored.status !== 0) return undefined;
-
-	return join(repoRoot, ".env");
+	return ignored.status === 0;
 }
 
 function gitRepoRoot(cwd: string): string | undefined {
@@ -414,7 +468,9 @@ function failedResultSummaries(data: TavilyExtractResponse) {
 async function getApiKeyOrThrow(cwd: string): Promise<string> {
 	const apiKey = await readApiKey(cwd);
 	if (!apiKey) {
-		throw new Error("TAVILY_API_KEY is missing. Export it before starting pi, or add it to the Git repo root .env only when that .env is gitignored and untracked.");
+		throw new Error(
+			`TAVILY_API_KEY is not visible to pi-tavily from cwd ${cwd}. Set TAVILY_API_KEY in the Pi process env, set ${TAVILY_ENV_FILE_VAR}, configure ${defaultConfigPath()} with {"envFile":"/path/to/.env"}, or add it to this cwd's Git repo root .env when that file is gitignored and untracked.`,
+		);
 	}
 	return apiKey;
 }
@@ -424,7 +480,7 @@ export default function (pi: ExtensionAPI) {
 		name: "tavily_search",
 		label: "Tavily Search",
 		description:
-			"Search the public internet via Tavily. Requires TAVILY_API_KEY in the environment, or in the Git repo root .env only when that .env is gitignored and untracked. Output is compacted and capped at 10 results.",
+			"Search the public internet via Tavily. Requires TAVILY_API_KEY in the environment, PI_TAVILY_ENV_FILE, ~/.pi/agent/state/pi-tavily/config.json envFile, or a safe Git repo root .env. Output is compacted and capped at 10 results.",
 		promptSnippet: "Search the public internet via Tavily and return compact cited results.",
 		promptGuidelines: [
 			"Use tavily_search when the user asks for current web information, external documentation, news, or internet research that is not available from local files.",

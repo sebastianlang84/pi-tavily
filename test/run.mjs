@@ -47,6 +47,8 @@ async function loadTools() {
 
 const originalFetch = globalThis.fetch;
 const originalKey = process.env.TAVILY_API_KEY;
+const originalEnvFile = process.env.PI_TAVILY_ENV_FILE;
+const originalConfigFile = process.env.PI_TAVILY_CONFIG_FILE;
 
 function installFetch(responseFactory) {
 	const calls = [];
@@ -67,6 +69,10 @@ function restoreGlobals() {
 	globalThis.fetch = originalFetch;
 	if (originalKey === undefined) delete process.env.TAVILY_API_KEY;
 	else process.env.TAVILY_API_KEY = originalKey;
+	if (originalEnvFile === undefined) delete process.env.PI_TAVILY_ENV_FILE;
+	else process.env.PI_TAVILY_ENV_FILE = originalEnvFile;
+	if (originalConfigFile === undefined) delete process.env.PI_TAVILY_CONFIG_FILE;
+	else process.env.PI_TAVILY_CONFIG_FILE = originalConfigFile;
 }
 
 async function execute(tool, params, { signal, cwd = process.cwd() } = {}) {
@@ -115,6 +121,7 @@ async function withTempGitRepo(callback) {
 
 async function test(name, fn) {
 	try {
+		process.env.PI_TAVILY_CONFIG_FILE = join(tmpdir(), `pi-tavily-test-missing-config-${process.pid}.json`);
 		await fn();
 		console.log(`ok - ${name}`);
 	} finally {
@@ -233,6 +240,68 @@ await test("tavily_extract rejects sensitive or over-limit URLs before API-key l
 	assert.equal(calls.length, 0);
 });
 
+await test("process env wins over env-file fallbacks", async () => {
+	process.env.TAVILY_API_KEY = "process-key";
+	await withTempGitRepo(async (root, nested) => {
+		process.env.PI_TAVILY_ENV_FILE = join(root, ".env");
+		const calls = installFetch(() => ({ query: "q", results: [] }));
+		await execute(search, { query: "q" }, { cwd: nested });
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].options.headers.Authorization, "Bearer process-key");
+	});
+});
+
+await test("explicit PI_TAVILY_ENV_FILE works from unrelated cwd when ignored and untracked", async () => {
+	delete process.env.TAVILY_API_KEY;
+	await withTempGitRepo(async (root) => {
+		await withTempDir(async (unrelatedCwd) => {
+			process.env.PI_TAVILY_ENV_FILE = join(root, ".env");
+			const calls = installFetch(() => ({ query: "q", results: [] }));
+			await execute(search, { query: "q" }, { cwd: unrelatedCwd });
+			assert.equal(calls.length, 1);
+			assert.equal(calls[0].options.headers.Authorization, "Bearer root-env-key");
+		});
+	});
+});
+
+await test("configured envFile works from unrelated cwd when ignored and untracked", async () => {
+	delete process.env.TAVILY_API_KEY;
+	await withTempGitRepo(async (root) => {
+		await withTempDir(async (unrelatedCwd) => {
+			const configPath = join(unrelatedCwd, "pi-tavily-config.json");
+			await writeFile(configPath, JSON.stringify({ envFile: join(root, ".env") }), "utf8");
+			process.env.PI_TAVILY_CONFIG_FILE = configPath;
+			const calls = installFetch(() => ({ query: "q", results: [] }));
+			await execute(search, { query: "q" }, { cwd: unrelatedCwd });
+			assert.equal(calls.length, 1);
+			assert.equal(calls[0].options.headers.Authorization, "Bearer root-env-key");
+		});
+	});
+});
+
+await test("explicit env-file paths refuse tracked or not-gitignored files", async () => {
+	delete process.env.TAVILY_API_KEY;
+	await withTempDir(async (dir) => {
+		initGit(dir);
+		await writeFile(join(dir, ".env"), "TAVILY_API_KEY=tracked-key\n", "utf8");
+		const add = spawnSync("git", ["add", ".env"], { cwd: dir, encoding: "utf8", timeout: 3000 });
+		assert.equal(add.status, 0, add.stderr);
+		process.env.PI_TAVILY_ENV_FILE = join(dir, ".env");
+		const calls = installFetch(() => ({ query: "q", results: [] }));
+		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is not visible/i);
+		assert.equal(calls.length, 0);
+	});
+
+	await withTempDir(async (dir) => {
+		initGit(dir);
+		await writeFile(join(dir, ".env"), "TAVILY_API_KEY=not-ignored-key\n", "utf8");
+		process.env.PI_TAVILY_ENV_FILE = join(dir, ".env");
+		const calls = installFetch(() => ({ query: "q", results: [] }));
+		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is not visible/i);
+		assert.equal(calls.length, 0);
+	});
+});
+
 await test("repo-root .env fallback works from nested cwd when ignored and untracked", async () => {
 	delete process.env.TAVILY_API_KEY;
 	await withTempGitRepo(async (_root, nested) => {
@@ -251,7 +320,7 @@ await test("repo-root .env fallback refuses tracked or not-gitignored .env", asy
 		const add = spawnSync("git", ["add", ".env"], { cwd: dir, encoding: "utf8", timeout: 3000 });
 		assert.equal(add.status, 0, add.stderr);
 		const calls = installFetch(() => ({ query: "q", results: [] }));
-		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is missing/i);
+		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is not visible/i);
 		assert.equal(calls.length, 0);
 	});
 
@@ -259,7 +328,7 @@ await test("repo-root .env fallback refuses tracked or not-gitignored .env", asy
 		initGit(dir);
 		await writeFile(join(dir, ".env"), "TAVILY_API_KEY=not-ignored-key\n", "utf8");
 		const calls = installFetch(() => ({ query: "q", results: [] }));
-		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is missing/i);
+		await rejectsWith(execute(search, { query: "q" }, { cwd: dir }), /TAVILY_API_KEY is not visible/i);
 		assert.equal(calls.length, 0);
 	});
 });
